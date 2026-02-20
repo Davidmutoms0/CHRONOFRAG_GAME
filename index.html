@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>CHRONOFRAG - by Grok</title>
+<style>
+  body { margin:0; background:#000; color:#0f0; font-family:monospace; overflow:hidden; }
+  canvas { image-rendering:pixelated; }
+  #ui { position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.7); padding:10px; border:2px solid #0f0; }
+  #gameover { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:50px; display:none; }
+  .frag { color:#0ff; text-shadow:0 0 10px #0ff; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div id="ui">
+  Score: <span id="score">0</span> | 
+  Fragments: <span class="frag" id="frags">0</span>/10 | 
+  Slow: <span id="slow">100</span>% | 
+  <button onclick="rewind()">REWIND ZONE (R)</button> 
+  <button onclick="stealFuture()">VOL FUTUR (F)</button>
+</div>
+<div id="gameover">TU ES MORT<br>Temps volé final : <span id="final">0</span><br>Appuie sur R pour recommencer</div>
+
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+c.width = window.innerWidth; c.height = window.innerHeight;
+
+let player = {x: c.width/2, y: c.height/2, size:20, speed:4, color:'#0f0'};
+let bullets = [];
+let enemies = [];
+let fragments = [];
+let particles = [];
+let score = 0;
+let fragCount = 0;
+let maxFrags = 10;
+let timeSlow = 1;
+let rewindZone = null;
+let rewindTimer = 0;
+let stolenEnemy = null;
+let gameOver = false;
+let permanentFrag = localStorage.getItem('chronofrag') || 0;
+
+// --- INPUT ---
+const keys = {};
+window.onkeydown = e => keys[e.key.toLowerCase()] = true;
+window.onkeyup = e => keys[e.key.toLowerCase()] = false;
+
+// --- SPAWN ---
+function spawnEnemy() {
+  const side = Math.floor(Math.random()*4);
+  let x,y;
+  if(side===0){x=Math.random()*c.width; y=-50;}
+  else if(side===1){x=c.width+50; y=Math.random()*c.height;}
+  else if(side===2){x=Math.random()*c.width; y=c.height+50;}
+  else {x=-50; y=Math.random()*c.height;}
+  
+  enemies.push({
+    x, y,
+    size: 25 + Math.random()*20,
+    speed: 0.8 + Math.random()*1.2,
+    color: `hsl(${Math.random()*360},100%,50%)`,
+    vx:0, vy:0,
+    phase: Math.random()*6.28
+  });
+}
+
+function dropFragment(x,y) {
+  fragments.push({x, y, size:15, life: 600 });
+}
+
+// --- PARTICLES ---
+function explode(x,y,color) {
+  for(let i=0;i<30;i++){
+    const a = Math.random()*6.28;
+    const v = Math.random()*5;
+    particles.push({x,y, vx:Math.cos(a)*v, vy:Math.sin(a)*v, life:40, color});
+  }
+}
+
+// --- REWIND ---
+function rewind() {
+  if(fragCount >= 3 && !rewindZone){
+    fragCount -= 3;
+    rewindZone = {x:player.x, y:player.y, size:80, life:300};
+    rewindTimer = 300; // 5 secondes à 60fps
+  }
+}
+
+// --- VOL DE FUTUR ---
+function stealFuture() {
+  if(fragCount >= 5){
+    fragCount -=5;
+    const close = enemies.find(e => dist(e,player)<100);
+    if(close) stolenEnemy = {enemy:close, timer:180};
+  }
+}
+
+// --- UTIL ---
+function dist(a,b){return Math.hypot(a.x-b.x, a.y-b.y);}
+
+// --- GAME LOOP ---
+let last = 0;
+function loop(t){
+  if(!last) last=t;
+  const dt = Math.min((t-last)/16.6, 2); // cap dt
+  last=t;
+  const slowDt = dt * timeSlow;
+
+  if(!gameOver){
+    // INPUT
+    if(keys['w'] || keys['arrowup']) player.y -= player.speed / timeSlow;
+    if(keys['s'] || keys['arrowdown']) player.y += player.speed / timeSlow;
+    if(keys['a'] || keys['arrowleft']) player.x -= player.speed / timeSlow;
+    if(keys['d'] || keys['arrowright']) player.x += player.speed / timeSlow;
+    if(keys['r'] && gameOver) location.reload();
+
+    // TIME SLOW avec fragments
+    timeSlow = 1 - (fragCount/maxFrags)*0.95; // max 95% slow
+    if(timeSlow < 0.05) timeSlow = 0.05;
+
+    // SPAWN
+    if(Math.random()<0.02 + score/10000) spawnEnemy();
+
+    // UPDATE ENEMIES
+    enemies.forEach(e => {
+      e.phase += 0.02;
+      const dx = player.x - e.x;
+      const dy = player.y - e.y;
+      const d = Math.hypot(dx,dy)||1;
+      e.vx = dx/d * e.speed;
+      e.vy = dy/d * e.speed;
+      
+      // si vol de futur
+      if(stolenEnemy && stolenEnemy.enemy === e && stolenEnemy.timer>0){
+        player.x = e.x; player.y = e.y; // téléportation visuelle folle
+      }
+
+      e.x += e.vx / timeSlow;
+      e.y += e.vy / timeSlow;
+    });
+
+    // COLLISIONS
+    enemies = enemies.filter(e => {
+      if(dist(e,player) < e.size + player.size){
+        explode(player.x, player.y, '#0f0');
+        gameOver = true;
+        document.getElementById('gameover').style.display='block';
+        document.getElementById('final').innerText = score + permanentFrag*1000;
+        if(score + permanentFrag*1000 > localStorage.getItem('chronofrag_best')){
+          localStorage.setItem('chronofrag_best', score + permanentFrag*1000);
+        }
+        return false;
+      }
+      return true;
+    });
+
+    // FRAGMENTS
+    fragments = fragments.filter(f => {
+      if(dist(f,player)<40){
+        fragCount++;
+        score += 100;
+        explode(f.x,f.y,'#0ff');
+        if(fragCount >= maxFrags){
+          fragCount = 0;
+          permanentFrag++;
+          localStorage.setItem('chronofrag', permanentFrag);
+          maxFrags += 3; // difficulté qui monte
+        }
+        return false;
+      }
+      f.life--;
+      return f.life>0;
+    });
+
+    // REWIND ZONE
+    if(rewindZone){
+      rewindTimer--;
+      if(rewindTimer<=0) rewindZone=null;
+    }
+
+    // STOLEN ENEMY TIMER
+    if(stolenEnemy) stolenEnemy.timer--;
+    if(stolenEnemy && stolenEnemy.timer<=0) stolenEnemy=null;
+  }
+
+  // RENDER
+  ctx.fillStyle='rgba(0,0,0,0.1)';
+  ctx.fillRect(0,0,c.width,c.height);
+
+  // Player
+  ctx.fillStyle = gameOver?'#f00':player.color;
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.size, 0, 6.28);
+  ctx.fill();
+
+  // Enemies
+  enemies.forEach(e=>{
+    ctx.fillStyle = e.color;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.size, 0, 6.28);
+    ctx.fill();
+    if(stolenEnemy && stolenEnemy.enemy===e){
+      ctx.strokeStyle='#fff';
+      ctx.lineWidth=4;
+      ctx.stroke();
+    }
+  });
+
+  // Fragments
+  fragments.forEach(f=>{
+    ctx.fillStyle = `rgba(0,255,255,${f.life/600})`;
+    ctx.fillRect(f.x-8,f.y-8,16,16);
+  });
+
+  // Rewind zone
+  if(rewindZone){
+    ctx.strokeStyle = `rgba(0,255,255,${rewindTimer/300})`;
+    ctx.lineWidth=5;
+    ctx.beginPath();
+    ctx.arc(rewindZone.x, rewindZone.y, rewindZone.size, 0, 6.28);
+    ctx.stroke();
+  }
+
+  // Particles
+  particles = particles.filter(p=>{
+    p.x += p.vx; p.y += p.vy;
+    p.life--;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-2,p.y-2,4,4);
+    return p.life>0;
+  });
+
+  // UI update
+  document.getElementById('score').innerText = score;
+  document.getElementById('frags').innerText = fragCount;
+  document.getElementById('slow').innerText = Math.round(timeSlow*100);
+
+  if(!gameOver) requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Enemy → fragment sur mort (quand tu tires plus tard)
+setInterval(()=>{ if(Math.random()<0.3) spawnEnemy(); }, 3000);
+</script>
+</body>
+</html>
